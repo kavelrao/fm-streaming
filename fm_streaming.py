@@ -3,6 +3,7 @@ import numpy as  np
 import scipy.signal as signal
 import sounddevice as sd
 import multiprocessing
+import asyncio
 
 exitFlag = multiprocessing.Event()  # set flag to exit; not currently implemented
 sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
@@ -11,19 +12,17 @@ audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
 
 # Process to sample radio using the sdr
 class SampleProcess(multiprocessing.Process):
-    def __init__(self, sdr, f_sps, f_c, f_offset, num_samples):
+    def __init__(self, sdr, f_sps, f_c, f_offset, buffer_length):
         multiprocessing.Process.__init__(self)
         self.sdr = sdr
         self.f_sps = f_sps
         self.f_c = f_c
         self.f_offset = f_offset
-        self.num_samples = num_samples
+        self.buffer_length = buffer_length
+
     def run(self):
-        while not exitFlag.is_set():
-            print('starting sampling...')
-            sample = get_samples(self.sdr, self.num_samples, self.f_sps, self.f_c, self.f_offset)
-            sample_queue.put(sample)
-            print('... sampling finished')
+        print('starting streaming...')
+        asyncio.run(stream_samples(self.sdr, self.buffer_length, self.f_sps, self.f_c, self.f_offset))
 
 
 # Process to extract audio from the samples
@@ -42,21 +41,31 @@ class ExtractionProcess(multiprocessing.Process):
             audio_queue.put(audio)
             print('... processing finished')
 
+
 def main():
     # set up constants
     sdr = RtlSdr()
-    f_sps = 1.5*256*256*16  # sdr sampling frequency
-    f_audiosps =44100  # audio sampling frequency (for output)
-    f_c = 98.1e6  # KUOW Seattle
+    f_sps = 2.0*256*256*16  # sdr sampling frequency
+    f_audiosps =48000  # audio sampling frequency (for output)
+    f_c = 94.9e6  # listening frequency
     f_offset = int(250e3)  # offset by 250 Khz to avoid sdr center spike
     dt = 1.0 / f_sps  # time step size between samples
     nyquist = f_sps / 2.0  # nyquist frequency based on sample rate
-    buffer_time = 3.5  # length in seconds of samples in each buffer
+    buffer_time = 0.25  # length in seconds of samples in each buffer
     N = round(f_sps*buffer_time)  # number of samples to collect per buffer
 
     # initialize multiprocessing processes
     sample_process = SampleProcess(sdr, f_sps, f_c, f_offset, N)
     extraction_process = ExtractionProcess(f_sps, f_offset, f_audiosps)
+
+    # initalize output audio stream
+    # samplerate = f_audiosps-3900 and blocksize=15971 to reduce ALSA buffer underruns
+    # TODO figure out how to completely eliminate underruns without these hacks
+    stream = sd.OutputStream(samplerate=f_audiosps - 3900, blocksize=15971, channels=1)
+    stream.start()
+
+    print('block size: ', stream.blocksize)
+    print('sample size: ', stream.samplerate)
 
     sample_process.start()
     extraction_process.start()
@@ -64,17 +73,27 @@ def main():
     # audio playing in the main process
     while not exitFlag.is_set():
         audio = audio_queue.get(block=True)
-        sd.play(audio)
+
+        audio = audio.astype(np.float32)
+        stream.write(audio)
 
 
-# returns SDR samples
-def get_samples(sdr, N, f_sps, f_c, f_offset):
-    sdr.sample_rate = f_sps 
+async def stream_samples(sdr, N, f_sps, f_c, f_offset):
+    sdr.sample_rate = f_sps
     sdr.center_freq = f_c + f_offset
     sdr.gain = 42.0
-    samples = sdr.read_samples(N)
-
-    return samples   
+    samples_streamed = 0
+    sample_length = 131072  # length of each unit of samples streamed from sdr using sdr.stream()
+    samples = np.array([], dtype=np.complex64)
+    async for sample_set in sdr.stream():
+        samples_streamed += 1
+        samples = np.concatenate((samples, sample_set))
+        if samples_streamed * sample_length >= N:  # if N samples have been taken, send to the player
+            print('... streaming finished')
+            sample_queue.put(samples)
+            samples_streamed = 0
+            samples = samples = np.array([], dtype=np.complex64)
+            print('started streaming...')
 
 
 # returns filtered signal
@@ -83,7 +102,7 @@ def filter_samples(samples, f_sps, f_offset):
     N = len(samples)
 
     # shift samples back to center frequency using complex exponential with period -f_offset/f_sps
-    shift = np.exp(-1.0j * 2.0 * np.pi * -1 * f_offset / f_sps * np.arange(N))
+    shift = np.exp(1.0j * 2.0 * np.pi * f_offset / f_sps * np.arange(N))
     shifted_samples = samples * shift
 
     # filter samples to include only the FM bandwidth
@@ -92,6 +111,7 @@ def filter_samples(samples, f_sps, f_offset):
     filteredsignal = np.convolve(firtaps, shifted_samples, mode='same')
 
     return filteredsignal
+
 
 # returns audio processed from filteredsignal
 def process_signal(filteredsignal, f_sps, f_audiosps):
@@ -116,8 +136,9 @@ def process_signal(filteredsignal, f_sps, f_audiosps):
     # pad derivtheta with NaN so size is divisible by dsf, then split into rows of size dsf and take the mean of each row
     derivtheta_padded = np.pad(derivtheta.astype(float), (0, dsf - derivtheta.size % dsf), mode='constant', constant_values=np.NaN)
     dsdtheta = np.nanmean(derivtheta_padded.reshape(-1, dsf), axis=1)
-    
+
     return dsdtheta
+
 
 if __name__ == '__main__':
     main()
