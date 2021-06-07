@@ -2,3 +2,4 @@ pyrtlsdr
 numpy
 scipy
 sounddevice
+pynput

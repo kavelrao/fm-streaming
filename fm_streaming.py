@@ -1,11 +1,12 @@
+import multiprocessing
+import asyncio
 from rtlsdr import RtlSdr
 import numpy as  np
 import scipy.signal as signal
 import sounddevice as sd
-import multiprocessing
-import asyncio
+from pynput import keyboard
 
-exitFlag = multiprocessing.Event()  # set flag to exit; not currently implemented
+exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
 sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
 audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
 
@@ -40,7 +41,7 @@ class ExtractionProcess(multiprocessing.Process):
 
 
 def main():
-    print('Initializing.')
+    print('\nInitializing.\n')
 
     # set up constants
     f_sps = 2.0*256*256*16  # sdr sampling frequency
@@ -62,12 +63,14 @@ def main():
     # initialize multiprocessing processes
     sample_process = SampleProcess(sdr, f_sps, f_c, f_offset, N)
     extraction_process = ExtractionProcess(f_sps, f_offset, f_audiosps)
+    exit_listener = keyboard.Listener(on_press=on_press)
 
     # initalize output audio stream
     stream = sd.OutputStream(samplerate=f_audiosps , blocksize=int(N / (f_sps / f_audiosps)), channels=1)
     stream.start()
 
-    print('Initialized. Starting streaming.')
+    print('\nInitialized. Starting streaming. Press <ESC> to exit.\n')
+    exit_listener.start()
     sample_process.start()
     extraction_process.start()
 
@@ -93,6 +96,9 @@ async def stream_samples(sdr, N, f_sps, f_c, f_offset):
             sample_queue.put(samples)
             samples_streamed = 0  # reset samples for next batch
             samples = np.array([], dtype=np.complex64)
+        
+        if exitFlag.is_set():
+            break
 
 
 # returns filtered signal
@@ -134,6 +140,12 @@ def process_signal(filteredsignal, f_sps, f_audiosps):
     dsdtheta = np.nanmean(derivtheta_padded.reshape(-1, dsf), axis=1)
 
     return dsdtheta
+
+
+def on_press(key):
+    if key == keyboard.Key.esc:
+        exitFlag.set()
+        return True
 
 
 if __name__ == '__main__':
