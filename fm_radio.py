@@ -2,18 +2,26 @@ import multiprocessing
 import asyncio
 import queue
 import time
+import sys
+import os
+import faulthandler
 from rtlsdr import RtlSdr
 import numpy as  np
 import scipy.signal as signal
 import sounddevice as sd
 from pynput import keyboard
 
+
+# Plays FM radio through the computer audio output.
+
+faulthandler.enable()
 exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
 sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
 audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
 
 
 # Handles sampling, processing, and playing from an SDR
+# Outputs audio samples to Radio.output_queue for potential use by other programs
 # Optional contructor arguments:
 #   # sdr sampling rate, must be a multiple of 256
 #   # audio sampling rate
@@ -55,31 +63,30 @@ class Radio():
         # audio playing in the main process
         while not exitFlag.is_set():
             audio = audio_queue.get(block=True)
-
             audio = audio.astype(np.float32)
 
-            # play audio and send to output queue
+            # play audio and send to output queue if it's not full
             try:
                 self.output_queue.put(audio, block=False)
             except queue.Full:
                 pass
 
             self.stream.write(3 * audio)
-    
+
     def cleanup(self):
         time.sleep(self.buffer_time)  # wait to allow processes to finish
-        self.stream.stop()
-        self.stream.close()
-        self.sample_process.terminate()
-        self.sample_process.close()
         self.extraction_process.terminate()
+        self.sample_process.terminate()
+        self.stream.stop()
         self.extraction_process.close()
+        self.sample_process.close()
+        self.stream.close()
+        del self.output_queue  # must be deleted for clean exit
 
     def on_press(self, key):
         if key == keyboard.Key.esc:
             exitFlag.set()
             self.cleanup()
-            return False
 
 
 # Process to sample radio using the sdr
@@ -112,7 +119,7 @@ class SampleProcess(multiprocessing.Process):
                 samples = np.array([], dtype=np.complex64)
             
             if exitFlag.is_set():
-                break
+                return True
 
 
 # Process to extract audio from the samples
