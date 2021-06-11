@@ -2,8 +2,6 @@ import multiprocessing
 import asyncio
 import queue
 import time
-import sys
-import os
 import faulthandler
 from rtlsdr import RtlSdr
 import numpy as  np
@@ -29,7 +27,7 @@ audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
 #   # sdr tuning offset
 #   # buffer time
 class Radio():    
-    def __init__(self, f_sps=2.0*256*256*16, f_audiosps=48000, f_c=94.9e6, f_offset=250e3, buffer_time=1.0):
+    def __init__(self, f_sps=1.0*256*256*16, f_audiosps=48000, f_c=94.9e6, f_offset=250e3, buffer_time=1.0):
         # set up constants
         self.f_sps = f_sps  # sdr sampling frequency
         self.f_audiosps = f_audiosps  # audio sampling frequency (for output)
@@ -49,7 +47,7 @@ class Radio():
         self.exit_listener = keyboard.Listener(on_press=self.on_press)
 
         # initalize output audio stream
-        self.stream = sd.OutputStream(samplerate=self.f_audiosps , blocksize=int(self.N / (self.f_sps / self.f_audiosps)), channels=1)
+        self.stream = sd.OutputStream(samplerate=self.f_audiosps, blocksize=int(self.N / (self.f_sps / self.f_audiosps)), channels=1)
 
         self.output_queue = multiprocessing.Queue(25)  # for other programs to use audio samples. max size is 25 to avoid memory overuse if output is not being used.
     
@@ -107,15 +105,11 @@ class SampleProcess(multiprocessing.Process):
         sdr.sample_rate = f_sps
         sdr.center_freq = f_c + f_offset
         sdr.gain = -1.0  # increase for receiving weaker signals. valid gains (dB): -1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0
-        samples_streamed = 0
-        sample_length = 131072  # length of each unit of samples streamed from sdr using sdr.stream()
         samples = np.array([], dtype=np.complex64)
-        async for sample_set in sdr.stream():
-            samples_streamed += 1
+        async for sample_set in sdr.stream():  # streams 131072 samples at a time
             samples = np.concatenate((samples, sample_set))
-            if samples_streamed * sample_length >= N:  # if N samples have been taken, send to the player
+            if len(samples) >= N:
                 sample_queue.put(samples)
-                samples_streamed = 0  # reset samples for next batch
                 samples = np.array([], dtype=np.complex64)
             
             if exitFlag.is_set():
@@ -176,5 +170,5 @@ class ExtractionProcess(multiprocessing.Process):
 
 
 if __name__ == '__main__':
-    r = Radio()
+    r = Radio(buffer_time=2.5)
     r.run()

@@ -1,11 +1,7 @@
 from fm_radio import Radio
 import multiprocessing
-import time
-import io
 import scipy.io.wavfile
 import torch
-import zipfile
-import torchaudio
 from glob import glob
 from pynput import keyboard
 
@@ -51,7 +47,7 @@ class CaptionProcess(multiprocessing.Process):
 
 
 if __name__ == '__main__':
-    r = Radio(buffer_time=5.0)
+    r = Radio(buffer_time=5.0, f_sps=1.0*256*256*16)
     c = CaptionProcess(r.output_queue)
     c.start()
     r.run()

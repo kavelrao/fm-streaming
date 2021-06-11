@@ -1,2 +1,5 @@
 env
 pycache
+*.wav
+*.yml
+*.pyc
