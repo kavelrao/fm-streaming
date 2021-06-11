@@ -4,4 +4,3 @@ scipy
 sounddevice
 pynput
 pytorch
-torchaudio
