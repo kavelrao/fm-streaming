@@ -6,4 +6,4 @@ The goal of this project is to create a program that streams an FM signal from a
 
 If you have an SDR that is compatible with the python `rtlsdr` library, you can run `fm_radio.py` for a streaming radio and `fm_captions.py` for the same radio + captions printed in stdout.
 
-More details on the project can be found in my extensive writeup [here](https://www.kavelrao.com/files/fm_radio_report.pdf).
+More details on the project can be found in my extensive writeup [here](https://kavelrao.dev/assets/files/fm_radio_report.pdf).
