@@ -13,9 +13,12 @@ from pynput import keyboard
 # Plays FM radio through the computer audio output.
 
 faulthandler.enable()
-exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
-sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
-audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
+
+
+if __name__ == '__main__':
+    sample_queue = multiprocessing.Queue()  # samples added to the queue for processing
+    audio_queue = multiprocessing.Queue()  # audio added to the queue to be played
+    exitFlag = multiprocessing.Event()  # set flag to exit by pressing ESC
 
 
 # Handles sampling, processing, and playing from an SDR
@@ -38,12 +41,9 @@ class Radio():
         self.buffer_time = buffer_time  # length in seconds of samples in each buffer
         self.N = round(self.f_sps*self.buffer_time)  # number of samples to collect per buffer
 
-        # initialize SDR
-        self.sdr = RtlSdr()
-
         # initialize multiprocessing processes
-        self.sample_process = SampleProcess(self.sdr, self.f_sps, self.f_c, self.f_offset, self.N)
-        self.extraction_process = ExtractionProcess(self.f_sps, self.f_offset, self.f_audiosps)
+        self.sample_process = SampleProcess(self.f_sps, self.f_c, self.f_offset, self.N, sample_queue, exitFlag)
+        self.extraction_process = ExtractionProcess(self.f_sps, self.f_offset, self.f_audiosps, sample_queue, audio_queue, exitFlag)
         self.exit_listener = keyboard.Listener(on_press=self.on_press)
 
         # initalize output audio stream
@@ -89,47 +89,56 @@ class Radio():
 
 # Process to sample radio using the sdr
 class SampleProcess(multiprocessing.Process):
-    def __init__(self, sdr, f_sps, f_c, f_offset, buffer_length):
+    def __init__(self, f_sps, f_c, f_offset, buffer_length, sample_queue, exit_flag):
         multiprocessing.Process.__init__(self)
-        self.sdr = sdr
+        # initialize SDR
+        self.sdr = None
         self.f_sps = f_sps
         self.f_c = f_c
         self.f_offset = f_offset
         self.buffer_length = buffer_length
+        self.sample_queue = sample_queue
+        self.exit_flag = exit_flag
 
     def run(self):
-        asyncio.run(self.stream_samples(self.sdr, self.buffer_length, self.f_sps, self.f_c, self.f_offset))
+        asyncio.run(self.stream_samples(self.buffer_length, self.f_sps, self.f_c, self.f_offset))
 
 
-    async def stream_samples(self, sdr, N, f_sps, f_c, f_offset):
-        sdr.sample_rate = f_sps
-        sdr.center_freq = f_c + f_offset
-        sdr.gain = -1.0  # increase for receiving weaker signals. valid gains (dB): -1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0
+    async def stream_samples(self, N, f_sps, f_c, f_offset):
+        if self.sdr is None:
+            assert RtlSdr is not None
+            self.sdr = RtlSdr()
+        self.sdr.sample_rate = f_sps
+        self.sdr.center_freq = f_c + f_offset
+        self.sdr.gain = -1.0  # increase for receiving weaker signals. valid gains (dB): -1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0
         samples = np.array([], dtype=np.complex64)
-        async for sample_set in sdr.stream():  # streams 131072 samples at a time
+        async for sample_set in self.sdr.stream():  # streams 131072 samples at a time
             samples = np.concatenate((samples, sample_set))
             if len(samples) >= N:
-                sample_queue.put(samples)
+                self.sample_queue.put(samples)
                 samples = np.array([], dtype=np.complex64)
             
-            if exitFlag.is_set():
+            if self.exit_flag.is_set():
                 return True
 
 
 # Process to extract audio from the samples
 class ExtractionProcess(multiprocessing.Process):
-    def __init__(self, f_sps, f_offset, f_audiosps):
+    def __init__(self, f_sps, f_offset, f_audiosps, sample_queue, audio_queue, exit_flag):
         multiprocessing.Process.__init__(self)
         self.f_sps = f_sps
         self.f_offset = f_offset
         self.f_audiosps = f_audiosps
+        self.sample_queue = sample_queue
+        self.audio_queue = audio_queue
+        self.exit_flag = exit_flag
 
     def run(self):
-        while not exitFlag.is_set():
-            samples = sample_queue.get(block=True)
+        while not self.exit_flag.is_set():
+            samples = self.sample_queue.get(block=True)
             filteredsignal = self.filter_samples(samples, self.f_sps, self.f_offset)
             audio = self.process_signal(filteredsignal, self.f_sps, self.f_audiosps)
-            audio_queue.put(audio)
+            self.audio_queue.put(audio)
 
     # returns filtered signal
     def filter_samples(self, samples, f_sps, f_offset):
